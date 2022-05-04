@@ -16,7 +16,7 @@ import pathlib
 from pystoned import CQER, wCQER, CQERG
 from pystoned.constant import CET_ADDI, FUN_PROD, OPT_LOCAL, RTS_VRS
 from pystoned import dataset as dataset
-from pystoned.plot import plot2d, plot2d_test
+from pystoned.plot import plot2d
 import pyarrow
 import sys
 import math
@@ -28,11 +28,13 @@ DEF_COL_NAMES = ['id', 'year', 'day', 'hour',
                  'time_interval', 'queue_start']
 DEF_FILEPATH = ''
 DEF_AGG_TIME_PER = 5
+TMS_URL = 'https://tie-test.digitraffic.fi/api/tms/history/raw/lamraw_TMS_YY_DD.csv'
 
 
-def download_lam_day_report(tms_id: str, region: str, year: int, day: int,
+def download_lam_day_report(tms_id: str, year: int, day: int, direction: int,
                             time_from: int = 6, time_to: int = 20, if_faulty: bool = True) -> pd.DataFrame:
-    """Download the lam-report for the specified day. Downloaded data is cleaned.
+    """
+    Download the lam-report for the specified day. Downloaded data is cleaned.
 
     Parameters
     ----------
@@ -40,11 +42,6 @@ def download_lam_day_report(tms_id: str, region: str, year: int, day: int,
         The id number of selected traffic measurement station (TMS). \
         Meta-data about TMS is available: https://www.digitraffic.fi/en/road-traffic/#current-data-from-tms-stations .\
         String format is used, as `tms_id` might have a leading zero.
-    region : str
-        The code of the region, where the selected traffic measurement station is located.
-        For values check "Accessing the data" article by the link: \
-        https://vayla.fi/en/transport-network/data/open-data/road-network/tms-data#accessing-the-data.\
-        String format is used, as `region` might have a leading zero.
     year : int
         The year data was collected in the 4-digit format.
     day : int
@@ -52,6 +49,8 @@ def download_lam_day_report(tms_id: str, region: str, year: int, day: int,
         The day is provide as an integer in range(1, 366), with 1 - January 1st, \
         365 (366 in leap year) - December 31st. \
         To caclulate the day of the year you can use `iarotraffic.date_to_day()` function.
+    direction : int
+        Flow direction of interest. Marked as 1 or 2 (check the description of TMS to get the necessary direction)
     time_from : int, optional
         Data is cleaned, and the `time_from` shows, from which hour of the day the data is kept in 24h format. \
         (The default is 6, which reffrs to 6am)
@@ -77,11 +76,10 @@ def download_lam_day_report(tms_id: str, region: str, year: int, day: int,
     start_time = time.perf_counter()
     column_names = DEF_COL_NAMES
     df = pd.DataFrame()
-    url = 'https://tie-test.digitraffic.fi/api/tms/history/raw/lamraw_TMS_YY_DD.csv'
+    url = TMS_URL
 
     # Create the actual url
-    url = url.replace('YYYY', str(year)).replace('REGION_ID', region).replace(
-        'TMS', tms_id).replace('YY', str(year)[2:4]).replace('DD', str(day))
+    url = url.replace('TMS', tms_id).replace('YY', str(year)[2:4]).replace('DD', str(day))
 
     # Try to download the file
     if requests.get(url).status_code != 404:
@@ -104,14 +102,13 @@ def download_lam_day_report(tms_id: str, region: str, year: int, day: int,
         df = df[df.total_time >= time_from*60*60*100]
         df = df[df.total_time <= time_to*60*60*100]
 
-        end_time = time.perf_counter()
-        print(f"Download successful - file for the sensor {tms_id} for the day {day} in year {year}. \
-                Download took {end_time-start_time:0.4f} seconds")
-    else:
-        print(
-            f"File for the sensor {tms_id} for the day {day} in year {year} doesn't exist. ")
-        return df
+        df = df[df.direction == direction]
 
+        end_time = time.perf_counter()
+        print(f"Download successful - file for the sensor {tms_id} for the day {day} in year {year} was loaded in \
+                 {end_time-start_time:0.4f} seconds ")
+    else:
+        raise ValueError("File for the selected sensor in the exact day of the exact year doesn't exist! Please, check the input. NOTE: Some data might not be available on Fintraffic.")
     return df
 
 def date_to_day(date_to_change: datetime.date) -> int:
@@ -135,7 +132,7 @@ def previous_days(year: int, day: int, num_of_days: int, lam_id, region):
 IF UNSUCCESSFUL, LOADING DATA FROM THE SERVER AND SAVING IT LOCALLY AS GZIP-FILE"""
 
 def traffic_data_load(
-        tms_id: str, region: str, year: int, day_from: int, day_to: int, time_from=6, time_to=20,
+        tms_id: str, year: int, day_from: int, day_to: int, time_from=6, time_to=20,
         input_path=None, input_name=None, file_type='gzip') -> pd.DataFrame:
     start_time = time.perf_counter()
     filename = 'data' + '_' + tms_id + '_' + str(year)[2:4] \
@@ -172,10 +169,10 @@ def traffic_data_load(
             for day in range(day_from, day_to + 1):
                 if df.empty:
                     df = download_lam_day_report(
-                        tms_id, region, year, day, time_from=time_from, time_to=time_to)
+                        tms_id, year, day, time_from=time_from, time_to=time_to)
                 else:
                     df = df.append(download_lam_day_report(
-                        tms_id, region, year, day, time_from=time_from, time_to=time_to), ignore_index=True)
+                        tms_id, year, day, time_from=time_from, time_to=time_to), ignore_index=True)
             end_time_gzip = time.perf_counter()
             print(
                 f"Loading file from server took {end_time_gzip-start_time_gzip:0.4f} seconds. Saving .gzip file...")
@@ -319,7 +316,7 @@ def bagging(dirdata: pd.DataFrame, grid_size_x=70, grid_size_y=400) -> pd.DataFr
 
     # Getting the max density and flow values to calculcate the size of the bag
     maxDensity = dirdata.density.max()
-    maxFlow = dirdata.hourlyflow.max()
+    maxFlow = dirdata.flow.max()
 
     # Calclulating the size of the bag
     grid_density_size = maxDensity / grid_size_x
@@ -327,19 +324,19 @@ def bagging(dirdata: pd.DataFrame, grid_size_x=70, grid_size_y=400) -> pd.DataFr
 
     # Assigning the bag number for density and
     dirdata['grid_density'] = dirdata.density / grid_density_size
-    dirdata['grid_flow'] = dirdata.hourlyflow / grid_flow_size
+    dirdata['grid_flow'] = dirdata.flow / grid_flow_size
     dirdata = dirdata.astype({'grid_density': int, 'grid_flow': int})
 
     # Calculating the centroid and the weight of each bag
     bagged_data = dirdata.groupby(
         ['id', 'direction', 'grid_density', 'grid_flow'],
         as_index=False).agg(
-            bag_size=('id', 'count'), sum_flow=('hourlyflow', 'sum'), sum_density=('density', 'sum'))
+            bag_size=('id', 'count'), sum_flow=('flow', 'sum'), sum_density=('density', 'sum'))
     bagged_data['centroid_flow'] = bagged_data.sum_flow.div(bagged_data.bag_size)
     bagged_data['centroid_density'] = bagged_data.sum_density.div(bagged_data.bag_size)
     bagged_data['weight'] = bagged_data.bag_size.div(len(dirdata))
 
-    return bagged_data, maxDensity, maxFlow, dirdata
+    return bagged_data
 
 def representor(alpha: Sequence[float], beta: Sequence[float], x: float) -> float:
     """
@@ -1083,35 +1080,20 @@ def fscalc(df: pd.DataFrame, aggregation_time_period=DEF_AGG_TIME_PER) -> pd.Dat
     # Aggregate flow and speed by time
     time_agg = df.groupby(['id', 'date', 'aggregation', 'direction'],
                           as_index=False).agg(smspeed=('speed', scipy.stats.hmean),
-                                              flow=('cars', 'count'),
-                                              cars=('cars', 'sum'),
-                                              buses=('buses', 'sum'),
-                                              trucks=('trucks', 'sum'))
-    time_agg['hourlyflow'] = 60/aggregation_time_period * time_agg.flow
-    time_agg['hourlycars'] = 60/aggregation_time_period * time_agg.cars
-    time_agg['hourlybuses'] = 60/aggregation_time_period * time_agg.buses
-    time_agg['hourlytrucks'] = 60/aggregation_time_period * time_agg.trucks
-    time_agg['density'] = time_agg['hourlyflow'].div(
+                                              minuteflow=('cars', 'count'),
+                                              minutecars=('cars', 'sum'),
+                                              minutebuses=('buses', 'sum'),
+                                              minutetrucks=('trucks', 'sum'))
+    time_agg['flow'] = 60/aggregation_time_period * time_agg.minuteflow
+    time_agg['cars'] = 60/aggregation_time_period * time_agg.minutecars
+    time_agg['buses'] = 60/aggregation_time_period * time_agg.minutebuses
+    time_agg['trucks'] = 60/aggregation_time_period * time_agg.minutetrucks
+    time_agg['density'] = time_agg['flow'].div(
         time_agg['smspeed'].values)
     time_agg['seconds'] = time_agg['aggregation'] * 60 * aggregation_time_period
     time_agg['seconds'] = time_agg['seconds'].astype('float64')
     time_agg['time'] = pd.to_datetime(time_agg['seconds'], unit='s')
     time_agg['time'] = pd.Series([val.strftime("%H:%M") for val in time_agg['time']])
-
-    """# Aggregate flow and speed by space and calculate density. Calculate the weights
-    space_agg = time_agg.groupby(['id', 'date', 'aggregation', 'direction'],
-                                 as_index=False).agg(qdivvsum=('qdivv', 'sum'),
-                                                     flow=('hourlyflow', 'sum'),
-                                                     cars=('hourlycars', 'sum'),
-                                                     buses=('hourlybuses', 'sum'),
-                                                     trucks=('hourlytrucks', 'sum'))
-    space_agg['actual_flow'] = ti
-    space_agg['space_mean_speed'] = 1/(space_agg.qdivvsum.div(space_agg.flow))
-    space_agg['density'] = space_agg.flow.div(space_agg.space_mean_speed)
-    space_agg['weight'] = float(1/len(space_agg))
-    space_agg['car_proportion'] = space_agg.cars.div(space_agg.flow)
-    space_agg['bus_proportion'] = space_agg.buses.div(space_agg.flow)
-    space_agg['truck_proportion'] = space_agg.trucks.div(space_agg.flow)"""
 
     end_time = time.perf_counter()
     print(
